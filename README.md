@@ -53,17 +53,3 @@ Sunucu verilen port üzerinde tüm interface'leri (`INADDR_ANY`) dinler ve `./ww
     └── 404.html
 ```
 
-## Bilinen sınırlamalar
-
-- **Tek thread, blocking accept.** Aynı anda yalnızca bir bağlantı işlenir; yavaş bir client diğerlerini timeout'a kadar bekletir.
-- Parse hatası alan istekler şu an cevap verilmeden bağlantı kapatılarak reddedilir (400 dönüşü TODO).
-- HTTP/2, TLS, chunked transfer-encoding desteklenmez.
-- POST/PUT gibi gövdeli isteklerde body okunmaz/işlenmez.
-- HTTP/0.9 desteklenmez.
-
-## Yol haritası
-
-- [ ] Bad request durumlarında 400 cevabı (ortak `send_simple_response` helper'ı)
-- [ ] `select`/`epoll` ile çoklu bağlantı desteği
-- [ ] `SO_SNDTIMEO` ile yazma tarafında da timeout
-- [ ] Range request / conditional GET (If-Modified-Since)
