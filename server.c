@@ -217,13 +217,30 @@ static int send_response_headers(int client_fd, int version, int status_code,con
   return 0;
 }
 
+static int send_bad_request_response(int client_fd){
+
+  char buf[1024];
+  int status = 400;
+  const char *reason = "Bad Request";
+  const char *body = "<h1>Bad Request</h1>";
+  int len = snprintf(buf,sizeof(buf),
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n%s",
+        status, reason, strlen(body), body);
+
+  if (len < 0 || (size_t)len >= sizeof(buf)) return -1;
+  if (send(client_fd, buf, len, 0) < 0) return -1;
+  return 0;
+
+}
+
 static int serve_file(int client_fd, http_request_t *req){
    
   if (strstr(req->path, "..")){
-    const char *msg = "<h1>Bad Request</h1>";
-    send_response_headers(client_fd, req->version,400,"Bad Request","text/html",strlen(msg),0);
-    int s = send(client_fd, msg, strlen(msg), 0);
-    if (s < 0) return -1;
+    send_bad_request_response(client_fd);
     return -1;
   }
   
@@ -307,7 +324,7 @@ int main(int argc, char *argv[]) {
     if (client_fd < 0) {perror("accept Failed !");continue;}
     struct timeval tv = {.tv_sec = 60, .tv_usec = 0 };
     setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsocketopt(cleint_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     while(1){
 
       char buf[8012];
@@ -317,7 +334,7 @@ int main(int argc, char *argv[]) {
       
       http_request_t request;
       const int parse = parse_http_request(buf, &request);
-      if (parse < 0) break;
+      if (parse < 0){send_bad_request_response(client_fd);break;}
       const int sf = serve_file(client_fd, &request);
       if (sf < 0) break;
 
