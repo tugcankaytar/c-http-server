@@ -47,14 +47,14 @@ int make_listen_fd(int port){
 
   int listening_socket_number = socket(AF_INET,SOCK_STREAM,0);
   if(listening_socket_number < 0){
-    perror("make_listen_fd | cant get socket number !");
+    perror("make_listen_fd | can't get socket number !");
     return -1;
   }
 
   int opt = 1;
   int reuseaddr = setsockopt(listening_socket_number,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
   if (reuseaddr < 0){
-    perror("make_listen_fd | setsockopt Fails !");
+    perror("make_listen_fd | setsockopt Fail's !");
     close(listening_socket_number);
     return -1;
   }
