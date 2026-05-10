@@ -15,7 +15,7 @@ typedef struct {
   char path[256];
   int version;
   char host[256];
-  char connection[16];
+  char connection[64];
 } http_request_t;
 
 static ssize_t recv_request(int client_fd, char *buf, size_t buf_size){
@@ -36,10 +36,9 @@ static ssize_t recv_request(int client_fd, char *buf, size_t buf_size){
 }
 
 static int should_keep_alive(http_request_t *req){     
-  if (req->version == 9) return 0;
 
   if (req->version == 10){
-    return strcasecmp(req->connection, "keep_alive") == 0;
+    return strcasecmp(req->connection, "keep-alive") == 0;
   }
   return strcasecmp(req->connection, "close") != 0;
 }
@@ -79,7 +78,7 @@ int make_listen_fd(int port){
     close(listening_socket_number);
     return -1;
   }
-  printf("listening port: %d\n",listening_socket_number);
+  printf("listening fd number: %d\n",listening_socket_number);
 
   return listening_socket_number;    
 }
@@ -120,9 +119,7 @@ static int parse_http_request(const char *buf, http_request_t *out){
     if (strncmp(v, "HTTP/1.0",8) == 0){out->version = 10;}
     else if (strncmp(v, "HTTP/1.1", 8) == 0){out->version = 11;}
     else return -1;
-  }else{
-    out->version = 9;
-  }
+  }else return -1;
   
   if (path_len >= sizeof(out->path)) return -1;
   memcpy(out->path, path_start, path_len);
@@ -197,7 +194,7 @@ static const char *get_mime_type(const char *path){
 }
 
 
-static int send_response_headers(int client_fd, int version, int status_code,const char *reason,const char *content_type, long content_lenght, int keep_alive){
+static int send_response_headers(int client_fd, int version, int status_code,const char *reason,const char *content_type, long content_length, int keep_alive){
 
   char header_buf[1024];
   const char *conn_str = keep_alive ? "keep-alive" : "close";
@@ -211,7 +208,7 @@ static int send_response_headers(int client_fd, int version, int status_code,con
       status_code,
       reason,
       content_type,
-      content_lenght,
+      content_length,
       conn_str);
   if (len < 0 || (size_t)len >= sizeof(header_buf)) return -1; 
   if (send(client_fd, header_buf, len ,0) < 0) return -1;
@@ -221,9 +218,14 @@ static int send_response_headers(int client_fd, int version, int status_code,con
 }
 
 static int serve_file(int client_fd, http_request_t *req){
-  
-
-  if (strstr(req->path, "..")){return -1;}
+   
+  if (strstr(req->path, "..")){
+    const char *msg = "<h1>Bad Request</h1>";
+    send_response_headers(client_fd, req->version,400,"Bad Request","text/html",strlen(msg),0);
+    int s = send(client_fd, msg, strlen(msg), 0);
+    if (s < 0) return -1;
+    return -1;
+  }
   
   char full_path[512];
   if (strcmp(req->path,"/") == 0){
@@ -236,6 +238,7 @@ static int serve_file(int client_fd, http_request_t *req){
   const char *reason = "OK";
   
   FILE *requested_file = fopen(full_path, "rb");
+  int keep_alive = should_keep_alive(req);
 
   if (requested_file == NULL){
     snprintf(full_path, sizeof(full_path),
@@ -247,11 +250,10 @@ static int serve_file(int client_fd, http_request_t *req){
 
     if (requested_file == NULL){
       const char *msg = "<h1>Not Found</h1>";
-      if (req->version >= 10){
-        send_response_headers(client_fd,req->version,404,"Not Found","text/html",strlen(msg),1);
-      }
-        send(client_fd, msg, strlen(msg), 0);
-        return 0;
+    send_response_headers(client_fd,req->version,404,"Not Found","text/html",strlen(msg),keep_alive);
+    int s = send(client_fd, msg, strlen(msg), 0);
+    if (s < 0) return -1;
+    return 0;
     }
  }
 
@@ -263,12 +265,19 @@ static int serve_file(int client_fd, http_request_t *req){
   fseek(requested_file, 0, SEEK_END);
   long size = ftell(requested_file);
   fseek(requested_file ,0 ,SEEK_SET);
-  int keep_alive = should_keep_alive(req);
-  
-  if (req->version >= 10){send_response_headers(client_fd,req->version,status_code,reason,mime,size,keep_alive);}
-  
+  int srh = send_response_headers(client_fd,req->version,status_code,reason,mime,size,keep_alive);
+  if (srh < 0) return -1;
+    
   while((n = fread(file_buf, 1, sizeof(file_buf),requested_file)) > 0){
-      send(client_fd, file_buf, n, 0);
+      size_t sent = 0;
+      while (sent < n){
+        ssize_t k = send(client_fd, file_buf + sent, n - sent, 0);
+        if (k <= 0){
+          fclose(requested_file);
+          return -1;
+        }
+        sent += (size_t)k;
+      }
   }
     fclose(requested_file);
     return 0;
@@ -295,19 +304,22 @@ int main(int argc, char *argv[]) {
   while(1){
     
     client_fd = accept(fd, NULL, NULL);
-    
+    if (client_fd < 0) {perror("accept Failed !");continue;}
+    struct timeval tv = {.tv_sec = 60, .tv_usec = 0 };
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsocketopt(cleint_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     while(1){
 
-      char buf[1024];
+      char buf[8012];
 
       ssize_t n = recv_request(client_fd, buf, sizeof(buf));
       if (n <= 0) break;
       
-      buf[n] = '\0';
-
       http_request_t request;
-      parse_http_request(buf, &request);
-      serve_file(client_fd, &request);
+      const int parse = parse_http_request(buf, &request);
+      if (parse < 0) break;
+      const int sf = serve_file(client_fd, &request);
+      if (sf < 0) break;
 
       if (!should_keep_alive(&request)) break;
     }

@@ -1,0 +1,9 @@
+# compiled binary
+server
+
+# object files
+*.o
+
+# debug / editor scratch
+*.dSYM/
+*.swp
