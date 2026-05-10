@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/epoll.h>
 
 
 typedef struct {
@@ -17,23 +19,6 @@ typedef struct {
   char host[256];
   char connection[64];
 } http_request_t;
-
-static ssize_t recv_request(int client_fd, char *buf, size_t buf_size){
-  size_t total = 0;
-  while(total < buf_size -1){
-    ssize_t n = recv(client_fd, buf + total, buf_size - 1 - total, 0);
-    if (n <0) return -1;
-    if (n == 0) {
-      if (total == 0) return 0;
-      return -1;
-    }
-    total += n;
-    buf[total] = '\0';
-
-    if (strstr(buf, "\r\n\r\n") != NULL) return (ssize_t)total;
-  }
-  return -1;
-}
 
 static int should_keep_alive(http_request_t *req){     
 
@@ -45,7 +30,7 @@ static int should_keep_alive(http_request_t *req){
 
 int make_listen_fd(int port){
 
-  int listening_socket_number = socket(AF_INET,SOCK_STREAM,0);
+  int listening_socket_number = socket(AF_INET,SOCK_STREAM | SOCK_NONBLOCK,0);
   if(listening_socket_number < 0){
     perror("make_listen_fd | can't get socket number !");
     return -1;
@@ -237,69 +222,6 @@ static int send_bad_request_response(int client_fd){
 
 }
 
-static int serve_file(int client_fd, http_request_t *req){
-   
-  if (strstr(req->path, "..")){
-    send_bad_request_response(client_fd);
-    return -1;
-  }
-  
-  char full_path[512];
-  if (strcmp(req->path,"/") == 0){
-    snprintf(full_path, sizeof(full_path),"./www/index.html");
-  }else{
-    snprintf(full_path, sizeof(full_path), "./www%s",req->path);
-  }
-
-  int status_code = 200;
-  const char *reason = "OK";
-  
-  FILE *requested_file = fopen(full_path, "rb");
-  int keep_alive = should_keep_alive(req);
-
-  if (requested_file == NULL){
-    snprintf(full_path, sizeof(full_path),
-        "./www/404.html");
-    
-    requested_file = fopen(full_path,"rb");
-    status_code = 404;
-    reason = "Not Found";
-
-    if (requested_file == NULL){
-      const char *msg = "<h1>Not Found</h1>";
-    send_response_headers(client_fd,req->version,404,"Not Found","text/html",strlen(msg),keep_alive);
-    int s = send(client_fd, msg, strlen(msg), 0);
-    if (s < 0) return -1;
-    return 0;
-    }
- }
-
-  char file_buf[4096];
-  size_t n;
-  
-  const char *mime = get_mime_type(full_path);
-
-  fseek(requested_file, 0, SEEK_END);
-  long size = ftell(requested_file);
-  fseek(requested_file ,0 ,SEEK_SET);
-  int srh = send_response_headers(client_fd,req->version,status_code,reason,mime,size,keep_alive);
-  if (srh < 0) return -1;
-    
-  while((n = fread(file_buf, 1, sizeof(file_buf),requested_file)) > 0){
-      size_t sent = 0;
-      while (sent < n){
-        ssize_t k = send(client_fd, file_buf + sent, n - sent, 0);
-        if (k <= 0){
-          fclose(requested_file);
-          return -1;
-        }
-        sent += (size_t)k;
-      }
-  }
-    fclose(requested_file);
-    return 0;
-}
-
 int main(int argc, char *argv[]) {
   
   signal(SIGPIPE,SIG_IGN);
@@ -318,30 +240,40 @@ int main(int argc, char *argv[]) {
   int fd = make_listen_fd(user_port);
   if (fd < 0) { exit(1); }
   int client_fd;
+
+  int epfd = epoll_create1(EPOLL_CLOEXEC);
+  if (epfd <0){perror("epoll_create1"); exit(1);}
+  
+  struct epoll_event ev = {0};
+  ev.events = EPOLLIN;
+  ev.data.fd = fd;
+
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) < 0){
+    perror("epoll_ctl(listen)");
+    exit(1);
+  }
+
+  struct epoll_event events[64];
   while(1){
-    
-    client_fd = accept(fd, NULL, NULL);
-    if (client_fd < 0) {perror("accept Failed !");continue;}
-    struct timeval tv = {.tv_sec = 60, .tv_usec = 0 };
-    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    while(1){
-
-      char buf[8012];
-
-      ssize_t n = recv_request(client_fd, buf, sizeof(buf));
-      if (n <= 0) break;
-      
-      http_request_t request;
-      const int parse = parse_http_request(buf, &request);
-      if (parse < 0){send_bad_request_response(client_fd);break;}
-      const int sf = serve_file(client_fd, &request);
-      if (sf < 0) break;
-
-      if (!should_keep_alive(&request)) break;
+    int n = epoll_wait(epfd, events, 64, -1);
+    if (n <0) {
+      if (errno == EINTR) continue;
+      perror("epoll_wait"); 
+      break;
     }
-
-    close(client_fd);
+    for (int i = 0; i < n; i++){
+      if (events[i].data.fd == fd){
+        while(1){
+          client_fd = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+          if (client_fd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            perror("accept4"); break;
+          }
+          fprintf(stderr, "[accept] new fd=%d\n", client_fd);
+          close(client_fd);
+        }
+      }
+    }
   }
 
   return 0;
