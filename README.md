@@ -2,16 +2,30 @@
 
 Saf C ile yazılmış, `./www/` altındaki statik dosyaları sunan minimal bir HTTP/1.x sunucusu.
 
+## Sürümler
+
+Repo'da iki ayrı server implementasyonu bulunur:
+
+| Dosya | Model | Durum |
+|---|---|---|
+| `single_server.c` | Tek thread, blocking `accept` + keep-alive loop | ✅ Stabil, referans |
+| `epoll_server.c`  | Tek thread, `epoll` event loop + non-blocking I/O | 🚧 Refactor aşamasında |
+
+`epoll_server.c` başlangıç olarak `single_server.c`'nin birebir kopyasıdır; aşama aşama event-driven model'e dönüştürülmektedir.
+
 ## Derleme
 
 ```sh
-gcc -Wall -Wextra -O0 -g server.c -o server
+gcc -Wall -Wextra -O0 -g single_server.c -o single_server
+gcc -Wall -Wextra -O0 -g epoll_server.c  -o epoll_server
 ```
 
 ## Çalıştırma
 
 ```sh
-./server <port>
+./single_server <port>
+# veya
+./epoll_server <port>
 ```
 
 Sunucu verilen port üzerinde tüm interface'leri (`INADDR_ANY`) dinler ve `./www/` dizininden dosya servis eder. `/` isteği `index.html`'e döner.
@@ -31,8 +45,8 @@ Sunucu verilen port üzerinde tüm interface'leri (`INADDR_ANY`) dinler ve `./ww
 
 ```
 .
-├── server.c         Kaynak kod
-├── server           Derlenmiş binary
+├── single_server.c   Blocking-loop sürümü (referans)
+├── epoll_server.c    Epoll sürümü (refactor in progress)
 └── www/
     ├── index.html
     ├── about.html

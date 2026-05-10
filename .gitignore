@@ -1,5 +1,6 @@
-# compiled binary
-server
+# compiled binaries
+single_server
+epoll_server
 
 # object files
 *.o
